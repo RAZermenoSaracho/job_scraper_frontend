@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Basic readable styling for raw HTML job descriptions from the API. */
+.job-description-html p {
+  margin-bottom: 0.75em;
+}
+.job-description-html ul,
+.job-description-html ol {
+  margin: 0.5em 0 0.75em 1.25em;
+  list-style: revert;
+}
+.job-description-html a {
+  color: #2563eb;
+  text-decoration: underline;
+}
+.job-description-html strong {
+  font-weight: 600;
+}
