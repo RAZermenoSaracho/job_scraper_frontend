@@ -1,12 +1,15 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ConfigForm from "./components/ConfigForm.jsx";
 import JobsTable from "./components/JobsTable.jsx";
 import JobDetail from "./components/JobDetail.jsx";
+import ProgressBar from "./components/ProgressBar.jsx";
 import Toast from "./components/Toast.jsx";
 import { useJobConfig } from "./hooks/useJobConfig.js";
 import { useDiscardedUrls } from "./hooks/useDiscardedUrls.js";
-import { fetchJobs } from "./utils/api.js";
+import { startScrapeJob, getJobStatus, getJobResult } from "./utils/api.js";
 import { exportJobsToExcel } from "./utils/excelExport.js";
+
+const POLL_INTERVAL_MS = 2000;
 
 function buildRequestBody(config, discardedUrls) {
   return {
@@ -26,26 +29,82 @@ export default function App() {
 
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(null);
   const [error, setError] = useState("");
   const [selectedJob, setSelectedJob] = useState(null);
   const [toastMessage, setToastMessage] = useState("");
+
+  const pollIntervalRef = useRef(null);
+
+  // Stop polling on unmount so an in-flight job doesn't keep ticking after
+  // the component is gone.
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, []);
 
   function showToast(message) {
     setToastMessage(message);
     setTimeout(() => setToastMessage(""), 3000);
   }
 
+  // Polls GET /jobs/{jobId}/status every 2s, updating `progress` on each
+  // tick, until the job reaches a terminal state. Resolves with the job
+  // array on "done"; rejects (tagged isJobError) on "error".
+  function pollJobStatus(jobId) {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+
+    return new Promise((resolve, reject) => {
+      pollIntervalRef.current = setInterval(async () => {
+        try {
+          const status = await getJobStatus(jobId);
+
+          if (status.status === "done") {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+            const result = await getJobResult(jobId);
+            resolve(result);
+            return;
+          }
+
+          if (status.status === "error") {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+            const jobError = new Error(status.error || "The search failed.");
+            jobError.isJobError = true;
+            reject(jobError);
+            return;
+          }
+
+          setProgress({ stage: status.stage, current: status.current, total: status.total });
+        } catch (err) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+          reject(err);
+        }
+      }, POLL_INTERVAL_MS);
+    });
+  }
+
   async function runSearch(discardedUrlsForRequest) {
     setLoading(true);
     setError("");
+    setProgress(null);
     try {
       const body = buildRequestBody(config, discardedUrlsForRequest);
-      const data = await fetchJobs(body);
-      setJobs(data.jobs || []);
+      const { job_id } = await startScrapeJob(body);
+      const result = await pollJobStatus(job_id);
+      setJobs(result || []);
     } catch (err) {
-      setError(err.message);
+      if (err.isJobError) {
+        showToast(err.message);
+      } else {
+        setError(err.message);
+      }
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   }
 
@@ -90,6 +149,8 @@ export default function App() {
           onSearch={handleSearch}
           loading={loading}
         />
+
+        {progress && <ProgressBar {...progress} />}
 
         {error && (
           <div className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">

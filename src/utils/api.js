@@ -7,16 +7,41 @@ const client = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
+function toApiError(error, fallbackMessage) {
+  const detail = error.response?.data?.detail;
+  return new Error(detail || error.message || fallbackMessage);
+}
+
 /**
- * Fetches jobs from the job_scraper API.
- * Throws an Error whose message is the API's "detail" field when available.
+ * Starts an async scrape job. The API responds immediately (202) with a
+ * job_id — the actual scraping (2-4 min) happens out of band and must be
+ * polled via getJobStatus/getJobResult.
  */
-export async function fetchJobs(requestBody) {
+export async function startScrapeJob(requestBody) {
   try {
     const response = await client.post("/jobs", requestBody);
     return response.data;
   } catch (error) {
-    const detail = error.response?.data?.detail;
-    throw new Error(detail || error.message || "Failed to fetch jobs.");
+    throw toApiError(error, "Failed to start the search.");
+  }
+}
+
+/** Polls the status of a running scrape job. */
+export async function getJobStatus(jobId) {
+  try {
+    const response = await client.get(`/jobs/${jobId}/status`);
+    return response.data;
+  } catch (error) {
+    throw toApiError(error, "Failed to fetch job status.");
+  }
+}
+
+/** Fetches the final job list. Only valid once status is "done". */
+export async function getJobResult(jobId) {
+  try {
+    const response = await client.get(`/jobs/${jobId}/result`);
+    return response.data;
+  } catch (error) {
+    throw toApiError(error, "Failed to fetch job results.");
   }
 }
