@@ -2,7 +2,9 @@ import { useState } from "react";
 
 /**
  * Tag/chip input: type a value and press Enter or "," to add it as a chip.
- * Click the "x" on a chip to remove it.
+ * Pasting comma-separated text adds all of it as chips at once (deduped
+ * case-insensitively against existing chips). Click the "x" on a chip to
+ * remove it.
  */
 export default function ChipInput({ label, values, onChange, placeholder }) {
   const [draft, setDraft] = useState("");
@@ -22,6 +24,27 @@ export default function ChipInput({ label, values, onChange, placeholder }) {
     } else if (event.key === "Backspace" && draft === "" && values.length > 0) {
       onChange(values.slice(0, -1));
     }
+  }
+
+  function handlePaste(event) {
+    const pasted = event.clipboardData.getData("text");
+    if (!pasted.includes(",")) return;
+
+    event.preventDefault();
+
+    const existingLower = new Set(values.map((value) => value.toLowerCase()));
+    const newChips = [];
+    for (const raw of pasted.split(",")) {
+      const value = raw.trim();
+      if (!value || existingLower.has(value.toLowerCase())) continue;
+      existingLower.add(value.toLowerCase());
+      newChips.push(value);
+    }
+
+    if (newChips.length > 0) {
+      onChange([...values, ...newChips]);
+    }
+    setDraft("");
   }
 
   function removeChip(index) {
@@ -53,6 +76,7 @@ export default function ChipInput({ label, values, onChange, placeholder }) {
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           onBlur={commitDraft}
           placeholder={placeholder}
           className="min-w-[120px] flex-1 border-none bg-transparent p-1 text-sm text-neutral-100 placeholder:text-neutral-500 outline-none focus:ring-0"
