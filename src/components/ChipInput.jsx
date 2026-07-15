@@ -30,18 +30,18 @@ export default function ChipInput({ label, values, onChange, placeholder }) {
 
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
-      <div className="flex flex-wrap items-center gap-2 rounded-md border border-gray-300 bg-white p-2 focus-within:ring-2 focus-within:ring-blue-500">
+      <label className="block text-sm font-medium text-neutral-300 mb-1">{label}</label>
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-neutral-700 bg-neutral-950 p-2 focus-within:ring-2 focus-within:ring-blue-500">
         {values.map((value, index) => (
           <span
             key={value}
-            className="flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-1 text-sm text-blue-800"
+            className="flex items-center gap-1 rounded-full bg-blue-900/40 px-2.5 py-1 text-sm text-blue-300"
           >
             {value}
             <button
               type="button"
               onClick={() => removeChip(index)}
-              className="text-blue-600 hover:text-blue-900"
+              className="text-blue-400 hover:text-blue-200"
               aria-label={`Remove ${value}`}
             >
               &times;
@@ -55,7 +55,7 @@ export default function ChipInput({ label, values, onChange, placeholder }) {
           onKeyDown={handleKeyDown}
           onBlur={commitDraft}
           placeholder={placeholder}
-          className="min-w-[120px] flex-1 border-none p-1 text-sm outline-none focus:ring-0"
+          className="min-w-[120px] flex-1 border-none bg-transparent p-1 text-sm text-neutral-100 placeholder:text-neutral-500 outline-none focus:ring-0"
         />
       </div>
     </div>

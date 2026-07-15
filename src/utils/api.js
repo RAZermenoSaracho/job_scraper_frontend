@@ -36,7 +36,11 @@ export async function getJobStatus(jobId) {
   }
 }
 
-/** Fetches the final job list. Only valid once status is "done". */
+/**
+ * Fetches the final job list. Only valid once status is "done". Resolves to
+ * `{ keywords: [...], jobs: [...] }` — callers need the `jobs` array, not
+ * the whole object.
+ */
 export async function getJobResult(jobId) {
   try {
     const response = await client.get(`/jobs/${jobId}/result`);

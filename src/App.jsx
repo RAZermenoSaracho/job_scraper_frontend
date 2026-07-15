@@ -95,7 +95,7 @@ export default function App() {
       const body = buildRequestBody(config, discardedUrlsForRequest);
       const { job_id } = await startScrapeJob(body);
       const result = await pollJobStatus(job_id);
-      setJobs(result || []);
+      setJobs(Array.isArray(result?.jobs) ? result.jobs : []);
     } catch (err) {
       if (err.isJobError) {
         showToast(err.message);
@@ -132,11 +132,11 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <header className="border-b border-gray-200 bg-white">
+    <div className="min-h-screen bg-neutral-950">
+      <header className="border-b border-neutral-800 bg-neutral-900">
         <div className="mx-auto max-w-5xl px-4 py-4">
-          <h1 className="text-xl font-bold text-gray-900">Job Scraper</h1>
-          <p className="text-sm text-gray-500">
+          <h1 className="text-xl font-bold text-neutral-100">Job Scraper</h1>
+          <p className="text-sm text-neutral-400">
             Configure your search, review results, and export the ones you like.
           </p>
         </div>
@@ -153,20 +153,20 @@ export default function App() {
         {progress && <ProgressBar {...progress} />}
 
         {error && (
-          <div className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <div className="rounded-md border border-red-900 bg-red-950/50 px-4 py-3 text-sm text-red-300">
             {error}
           </div>
         )}
 
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-gray-900">
+          <h2 className="text-base font-semibold text-neutral-100">
             Results {jobs.length > 0 && `(${jobs.length})`}
           </h2>
           <button
             type="button"
             onClick={handleExport}
             disabled={jobs.length === 0}
-            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm font-medium text-neutral-200 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Download Excel
           </button>
@@ -175,7 +175,7 @@ export default function App() {
         {loading ? (
           <div className="space-y-2">
             {[...Array(4)].map((_, i) => (
-              <div key={i} className="h-14 animate-pulse rounded-lg bg-gray-200" />
+              <div key={i} className="h-14 animate-pulse rounded-lg bg-neutral-800" />
             ))}
           </div>
         ) : (

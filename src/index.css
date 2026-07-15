@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Fixed dark theme — set on html/body so there's no white flash on load. */
+@layer base {
+  html,
+  body {
+    @apply bg-neutral-950 text-neutral-100;
+  }
+}
+
 /* Basic readable styling for raw HTML job descriptions from the API. */
 .job-description-html p {
   margin-bottom: 0.75em;
@@ -12,7 +20,7 @@
   list-style: revert;
 }
 .job-description-html a {
-  color: #2563eb;
+  color: #60a5fa;
   text-decoration: underline;
 }
 .job-description-html strong {
