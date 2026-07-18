@@ -3,7 +3,7 @@
  * own trusted job_scraper API, so rendering it via dangerouslySetInnerHTML
  * is acceptable here.
  */
-export default function JobDetail({ job, onClose, onDiscard }) {
+export default function JobDetail({ job, onClose, onDiscard, discardDisabled }) {
   if (!job) return null;
 
   return (
@@ -81,7 +81,8 @@ export default function JobDetail({ job, onClose, onDiscard }) {
           <button
             type="button"
             onClick={() => onDiscard(job)}
-            className="rounded-md border border-red-800 px-4 py-2 text-sm font-semibold text-red-400 hover:bg-red-950/50"
+            disabled={discardDisabled}
+            className="rounded-md border border-red-800 px-4 py-2 text-sm font-semibold text-red-400 hover:bg-red-950/50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Discard
           </button>

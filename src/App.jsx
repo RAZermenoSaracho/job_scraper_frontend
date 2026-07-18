@@ -11,7 +11,7 @@ import { exportJobsToExcel } from "./utils/excelExport.js";
 
 const POLL_INTERVAL_MS = 2000;
 
-function buildRequestBody(config, discardedUrls) {
+function buildRequestBody(config, discardedUrls, overrides = {}) {
   return {
     keywords: config.keywords,
     acceptable_locations: config.acceptable_locations,
@@ -20,7 +20,15 @@ function buildRequestBody(config, discardedUrls) {
     max_jobs_searched_per_keyword: config.max_jobs_searched_per_keyword,
     max_jobs_saved: config.max_jobs_saved,
     max_experience_years: config.max_experience_years,
+    ...overrides,
   };
+}
+
+// Placeholder row shown in `jobs` at the discarded job's position while its
+// replacement is being searched for. `__key` stands in for `Job Url` as the
+// React key since there's no real job yet.
+function makePlaceholder(key) {
+  return { __searching: true, __key: key };
 }
 
 export default function App() {
@@ -29,6 +37,7 @@ export default function App() {
 
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [isReplacing, setIsReplacing] = useState(false);
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState("");
   const [selectedJob, setSelectedJob] = useState(null);
@@ -49,10 +58,13 @@ export default function App() {
     setTimeout(() => setToastMessage(""), 3000);
   }
 
-  // Polls GET /jobs/{jobId}/status every 2s, updating `progress` on each
-  // tick, until the job reaches a terminal state. Resolves with the job
-  // array on "done"; rejects (tagged isJobError) on "error".
-  function pollJobStatus(jobId) {
+  // Polls GET /jobs/{jobId}/status every 2s, reporting progress via
+  // `onProgress` on each tick, until the job reaches a terminal state.
+  // Resolves with the job array on "done"; rejects (tagged isJobError) on
+  // "error". `onProgress` defaults to updating the page-level progress bar;
+  // pass a no-op for background searches that shouldn't drive it (e.g. the
+  // single-job replacement search after a discard).
+  function pollJobStatus(jobId, { onProgress = setProgress } = {}) {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
 
     return new Promise((resolve, reject) => {
@@ -77,7 +89,7 @@ export default function App() {
             return;
           }
 
-          setProgress({ stage: status.stage, current: status.current, total: status.total });
+          onProgress({ stage: status.stage, current: status.current, total: status.total });
         } catch (err) {
           clearInterval(pollIntervalRef.current);
           pollIntervalRef.current = null;
@@ -112,6 +124,45 @@ export default function App() {
     runSearch(discardedUrls);
   }
 
+  // Fetches exactly one replacement job with the same search criteria and
+  // swaps it into the placeholder's slot. `excludedUrls` are the URLs of
+  // every other job currently on screen (not persisted to discardedUrls —
+  // just kept out of this one request) so the replacement can't duplicate
+  // something already shown.
+  async function runReplacementSearch(placeholderKey, updatedDiscardedUrls, excludedUrls) {
+    setIsReplacing(true);
+    try {
+      const body = buildRequestBody(config, [...updatedDiscardedUrls, ...excludedUrls], {
+        max_jobs_saved: 1,
+      });
+      const { job_id } = await startScrapeJob(body);
+      const result = await pollJobStatus(job_id, { onProgress: () => {} });
+      const candidates = Array.isArray(result?.jobs) ? result.jobs : [];
+      const replacement = candidates.find((candidate) => !excludedUrls.includes(candidate["Job Url"]));
+
+      setJobs((prevJobs) => {
+        const index = prevJobs.findIndex((j) => j.__searching && j.__key === placeholderKey);
+        if (index === -1) return prevJobs;
+        const nextJobs = [...prevJobs];
+        if (replacement) {
+          nextJobs[index] = replacement;
+        } else {
+          nextJobs.splice(index, 1);
+        }
+        return nextJobs;
+      });
+
+      if (!replacement) {
+        showToast("No replacement job found.");
+      }
+    } catch (err) {
+      setJobs((prevJobs) => prevJobs.filter((j) => !(j.__searching && j.__key === placeholderKey)));
+      showToast(err.message || "Failed to search for a replacement.");
+    } finally {
+      setIsReplacing(false);
+    }
+  }
+
   async function handleDiscard(job) {
     const url = job["Job Url"];
     const updatedDiscardedUrls = discardedUrls.includes(url)
@@ -123,13 +174,26 @@ export default function App() {
       setSelectedJob(null);
     }
 
+    const index = jobs.findIndex((j) => j["Job Url"] === url);
+    const excludedUrls = jobs
+      .filter((j, i) => i !== index && !j.__searching)
+      .map((j) => j["Job Url"]);
+
+    if (index !== -1) {
+      const nextJobs = [...jobs];
+      nextJobs[index] = makePlaceholder(url);
+      setJobs(nextJobs);
+    }
+
     showToast("Job discarded — searching for a replacement...");
-    await runSearch(updatedDiscardedUrls);
+    await runReplacementSearch(url, updatedDiscardedUrls, excludedUrls);
   }
 
   function handleExport() {
-    exportJobsToExcel(jobs);
+    exportJobsToExcel(jobs.filter((job) => !job.__searching));
   }
+
+  const realJobsCount = jobs.filter((job) => !job.__searching).length;
 
   return (
     <div className="min-h-screen bg-neutral-950">
@@ -147,7 +211,7 @@ export default function App() {
           config={config}
           onChange={setConfig}
           onSearch={handleSearch}
-          loading={loading}
+          loading={loading || isReplacing}
         />
 
         {progress && <ProgressBar {...progress} />}
@@ -160,12 +224,12 @@ export default function App() {
 
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold text-neutral-100">
-            Results {jobs.length > 0 && `(${jobs.length})`}
+            Results {realJobsCount > 0 && `(${realJobsCount})`}
           </h2>
           <button
             type="button"
             onClick={handleExport}
-            disabled={jobs.length === 0}
+            disabled={realJobsCount === 0}
             className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm font-medium text-neutral-200 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Download Excel
@@ -179,11 +243,21 @@ export default function App() {
             ))}
           </div>
         ) : (
-          <JobsTable jobs={jobs} onSelectJob={setSelectedJob} onDiscardJob={handleDiscard} />
+          <JobsTable
+            jobs={jobs}
+            onSelectJob={setSelectedJob}
+            onDiscardJob={handleDiscard}
+            disableDiscard={isReplacing}
+          />
         )}
       </main>
 
-      <JobDetail job={selectedJob} onClose={() => setSelectedJob(null)} onDiscard={handleDiscard} />
+      <JobDetail
+        job={selectedJob}
+        onClose={() => setSelectedJob(null)}
+        onDiscard={handleDiscard}
+        discardDisabled={isReplacing}
+      />
       <Toast message={toastMessage} />
     </div>
   );

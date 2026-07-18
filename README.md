@@ -82,11 +82,21 @@ npm run preview   # serve the built dist/ locally to sanity-check
      separately in `localStorage` (key `job_scraper_discarded_urls`) via the
      `useDiscardedUrls` hook, so it survives independently from the search
      config.
-  2. Immediately re-runs `POST /jobs` with the same config and the updated
-     `discarded_urls`, replacing the table results.
-  3. If you were viewing that job's detail modal, it closes automatically.
-  4. Shows a brief toast confirming the discard and that a replacement is
-     being searched for.
+  2. If you were viewing that job's detail modal, it closes automatically.
+  3. The discarded job's row is replaced in place by a "Searching for a
+     replacement..." placeholder — the rest of the table is untouched, no
+     full-page reload or skeleton.
+  4. Runs `POST /jobs` with the same search config but `max_jobs_saved: 1`
+     (only one replacement is fetched) and `discarded_urls` temporarily
+     extended with every other job currently on screen, so the replacement
+     can't be a duplicate of something already shown. That extension is only
+     used for this one request — it isn't persisted.
+  5. Once the replacement arrives it's swapped into the placeholder's slot.
+     If none is found (or the request fails), the placeholder row is simply
+     removed and a toast explains why.
+  6. While a replacement search is in flight, the "Search" button and every
+     "Discard" button are disabled to keep only one search running at a
+     time.
 
 - **Excel export** (`utils/excelExport.js`) — the "Download Excel" button
   generates an `.xlsx` file client-side with columns `Job Title`,

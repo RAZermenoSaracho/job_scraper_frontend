@@ -159,7 +159,7 @@ src/
 
   utils/          api.js, excelExport.js, localStorage.js
 
-  App.jsx         top-level wiring, owns jobs/loading/error/selectedJob/toast state
+  App.jsx         top-level wiring, owns jobs/loading/isReplacing/error/selectedJob/toast state
 
   main.jsx        React entry point
 
@@ -195,11 +195,11 @@ drilling actually becomes painful, not preemptively.
 
   `[discardedUrls, setDiscardedUrls]`.
 
-- **Jobs results, loading, error, selected job (for the detail modal), toast
+- **Jobs results, loading, isReplacing, error, selected job (for the detail
 
-  message**: plain `useState` in `App.jsx`. Not persisted — a page reload is
+  modal), toast message**: plain `useState` in `App.jsx`. Not persisted — a
 
-  expected to clear results and re-fetch on demand.
+  page reload is expected to clear results and re-fetch on demand.
 
 - The two localStorage-backed hooks follow the same shape
 
@@ -209,7 +209,13 @@ drilling actually becomes painful, not preemptively.
 
   wraps `useState` + a `useEffect` that calls `saveToStorage`.
 
-### The discard-and-refetch flow (important, non-obvious)
+### The discard-and-replace flow (important, non-obvious)
+
+Discarding a job does **not** re-run the full search (that would blank the
+
+whole table via the `loading` skeleton and re-fetch `max_jobs_saved` jobs).
+
+Instead it replaces just that one row in place with a single-job search.
 
 `App.jsx`'s `handleDiscard(job)`:
 
@@ -217,31 +223,69 @@ drilling actually becomes painful, not preemptively.
 
    reading `discardedUrls` state right after calling its setter, since React
 
-   state updates aren't synchronous).
+   state updates aren't synchronous) and calls `setDiscardedUrls(...)` to
 
-2. Calls `setDiscardedUrls(updatedDiscardedUrls)` to persist it.
+   persist it.
 
-3. If the discarded job is the one currently open in `JobDetail`, closes the
+2. If the discarded job is the one currently open in `JobDetail`, closes the
 
    modal.
 
-4. Shows a toast via `showToast(...)`.
+3. Finds the job's index in `jobs` and replaces that slot with a placeholder
 
-5. Calls the shared `runSearch(discardedUrlsForRequest)` helper — the same
+   object `{ __searching: true, __key: <job url> }` via `setJobs` — the rest
 
-   function `handleSearch` uses — passing `updatedDiscardedUrls` explicitly
+   of the array (and the rest of the UI) is untouched.
 
-   (not the possibly-stale `discardedUrls` from closure) so the refetch
+4. Calls `runReplacementSearch(url, updatedDiscardedUrls, excludedUrls)`,
 
-   definitely includes the just-discarded URL.
+   where `excludedUrls` is every other job's URL currently in `jobs` (computed
+
+   from the pre-discard array, before the placeholder swap).
+
+`runReplacementSearch` sets `isReplacing` (separate from `loading` — it does
+
+**not** trigger the full-page skeleton) and calls `POST /jobs` via
+
+`buildRequestBody(config, [...updatedDiscardedUrls, ...excludedUrls], { max_jobs_saved: 1 })`.
+
+Two things matter here:
+
+- `max_jobs_saved` is overridden to `1` — only one replacement is fetched,
+
+  regardless of the configured value.
+
+- `discarded_urls` for this one request is the permanent list *plus* every
+
+  other job already on screen. That union is **not** persisted (only
+
+  `updatedDiscardedUrls` is passed to `setDiscardedUrls`) — it just stops the
+
+  backend from handing back a job you're already looking at. There's also a
+
+  client-side safety-net filter against `excludedUrls` on the result.
+
+On resolution, `setJobs` finds the placeholder by `__key` and either replaces
+
+it with the fetched job, or — if nothing came back, or the request
+
+failed — removes that slot entirely (`splice`), with a toast explaining why.
+
+While `isReplacing` is true, the "Search" button and every "Discard" button
+
+are disabled (`ConfigForm`'s `loading` prop and `JobsTable`'s/`JobDetail`'s
+
+`disableDiscard`/`discardDisabled` props), since `pollJobStatus` reuses a
+
+single shared `pollIntervalRef` and can't run two polls at once.
 
 If you add another mutation that needs an immediate refetch with fresh data,
 
-follow this same pattern: compute the new value locally first, pass it
+follow the same pattern as the full-search path: compute the new value
 
-explicitly into `runSearch`, and only then update state — don't chain off of
+locally first, pass it explicitly into the request builder, and only then
 
-state you just set.
+update state — don't chain off of state you just set.
 
 ### Key components
 
@@ -259,7 +303,15 @@ state you just set.
 
   cards below that breakpoint (both are rendered in the DOM, toggled via
 
-  Tailwind's `hidden`/`sm:hidden`, not JS-based breakpoint detection).
+  Tailwind's `hidden`/`sm:hidden`, not JS-based breakpoint detection). A job
+
+  entry with `__searching: true` renders as a spinner row/card instead of
+
+  real data — see the discard-and-replace flow below. Takes a
+
+  `disableDiscard` prop to disable every "Discard" button while a
+
+  replacement search is in flight.
 
 - `JobDetail.jsx` — modal, closes on backdrop click or the X button. Renders
 

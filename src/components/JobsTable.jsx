@@ -2,8 +2,12 @@
  * Renders jobs as a table on medium+ screens and as stacked cards on mobile.
  * Each row/card is clickable to open the job detail view; the discard button
  * stops propagation so it doesn't also trigger the row click.
+ *
+ * A job entry with `__searching: true` is a placeholder left in the
+ * discarded job's slot while a single replacement job is being searched
+ * for — it renders as a spinner row instead of real job data.
  */
-export default function JobsTable({ jobs, onSelectJob, onDiscardJob }) {
+export default function JobsTable({ jobs, onSelectJob, onDiscardJob, disableDiscard }) {
   if (jobs.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-neutral-700 bg-neutral-900 p-8 text-center text-sm text-neutral-500">
@@ -33,54 +37,77 @@ export default function JobsTable({ jobs, onSelectJob, onDiscardJob }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-800">
-            {jobs.map((job) => (
-              <tr
-                key={job["Job Url"]}
-                onClick={() => onSelectJob(job)}
-                className="cursor-pointer hover:bg-neutral-800/70"
-              >
-                <td className="px-4 py-2 font-medium text-neutral-100">{job["Job Title"]}</td>
-                <td className="px-4 py-2 text-neutral-300">{job["Company Name"]}</td>
-                <td className="px-4 py-2 text-neutral-300">{job["Job Location"]}</td>
-                <td className="px-4 py-2 text-neutral-300">{job["Compensation"] || "—"}</td>
-                <td className="px-4 py-2 text-neutral-300">{job["Tags"]}</td>
-                <td className="px-4 py-2 text-right">
-                  <button
-                    type="button"
-                    onClick={(event) => handleDiscardClick(event, job)}
-                    className="rounded-md border border-red-800 px-2 py-1 text-xs font-semibold text-red-400 hover:bg-red-950/50"
-                  >
-                    Discard
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {jobs.map((job) =>
+              job.__searching ? (
+                <tr key={job.__key} className="bg-neutral-900/60">
+                  <td colSpan={6} className="px-4 py-3 text-neutral-400">
+                    <span className="inline-flex items-center gap-2">
+                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-neutral-600 border-t-neutral-300" />
+                      Searching for a replacement...
+                    </span>
+                  </td>
+                </tr>
+              ) : (
+                <tr
+                  key={job["Job Url"]}
+                  onClick={() => onSelectJob(job)}
+                  className="cursor-pointer hover:bg-neutral-800/70"
+                >
+                  <td className="px-4 py-2 font-medium text-neutral-100">{job["Job Title"]}</td>
+                  <td className="px-4 py-2 text-neutral-300">{job["Company Name"]}</td>
+                  <td className="px-4 py-2 text-neutral-300">{job["Job Location"]}</td>
+                  <td className="px-4 py-2 text-neutral-300">{job["Compensation"] || "—"}</td>
+                  <td className="px-4 py-2 text-neutral-300">{job["Tags"]}</td>
+                  <td className="px-4 py-2 text-right">
+                    <button
+                      type="button"
+                      onClick={(event) => handleDiscardClick(event, job)}
+                      disabled={disableDiscard}
+                      className="rounded-md border border-red-800 px-2 py-1 text-xs font-semibold text-red-400 hover:bg-red-950/50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Discard
+                    </button>
+                  </td>
+                </tr>
+              )
+            )}
           </tbody>
         </table>
       </div>
 
       {/* Card layout for mobile */}
       <div className="space-y-3 sm:hidden">
-        {jobs.map((job) => (
-          <div
-            key={job["Job Url"]}
-            onClick={() => onSelectJob(job)}
-            className="cursor-pointer rounded-lg border border-neutral-800 bg-neutral-900 p-4 shadow-sm hover:bg-neutral-800/70"
-          >
-            <p className="font-semibold text-neutral-100">{job["Job Title"]}</p>
-            <p className="text-sm text-neutral-300">{job["Company Name"]}</p>
-            <p className="text-sm text-neutral-500">{job["Job Location"]}</p>
-            <p className="text-sm text-neutral-500">{job["Compensation"] || "—"}</p>
-            <p className="mt-1 text-xs text-neutral-500">{job["Tags"]}</p>
-            <button
-              type="button"
-              onClick={(event) => handleDiscardClick(event, job)}
-              className="mt-3 rounded-md border border-red-800 px-2 py-1 text-xs font-semibold text-red-400 hover:bg-red-950/50"
+        {jobs.map((job) =>
+          job.__searching ? (
+            <div
+              key={job.__key}
+              className="flex items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900/60 p-4 text-sm text-neutral-400 shadow-sm"
             >
-              Discard
-            </button>
-          </div>
-        ))}
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-neutral-600 border-t-neutral-300" />
+              Searching for a replacement...
+            </div>
+          ) : (
+            <div
+              key={job["Job Url"]}
+              onClick={() => onSelectJob(job)}
+              className="cursor-pointer rounded-lg border border-neutral-800 bg-neutral-900 p-4 shadow-sm hover:bg-neutral-800/70"
+            >
+              <p className="font-semibold text-neutral-100">{job["Job Title"]}</p>
+              <p className="text-sm text-neutral-300">{job["Company Name"]}</p>
+              <p className="text-sm text-neutral-500">{job["Job Location"]}</p>
+              <p className="text-sm text-neutral-500">{job["Compensation"] || "—"}</p>
+              <p className="mt-1 text-xs text-neutral-500">{job["Tags"]}</p>
+              <button
+                type="button"
+                onClick={(event) => handleDiscardClick(event, job)}
+                disabled={disableDiscard}
+                className="mt-3 rounded-md border border-red-800 px-2 py-1 text-xs font-semibold text-red-400 hover:bg-red-950/50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Discard
+              </button>
+            </div>
+          )
+        )}
       </div>
     </>
   );
