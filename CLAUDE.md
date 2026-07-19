@@ -159,7 +159,7 @@ src/
 
   utils/          api.js, excelExport.js, localStorage.js
 
-  App.jsx         top-level wiring, owns jobs/loading/isReplacing/error/selectedJob/toast state
+  App.jsx         top-level wiring, owns jobs/loading/progress/error/selectedJob/selectedUrls/toast state
 
   main.jsx        React entry point
 
@@ -195,11 +195,19 @@ drilling actually becomes painful, not preemptively.
 
   `[discardedUrls, setDiscardedUrls]`.
 
-- **Jobs results, loading, isReplacing, error, selected job (for the detail
+- **Jobs results, loading, progress, error, selected job (for the detail
 
-  modal), toast message**: plain `useState` in `App.jsx`. Not persisted — a
+  modal), selected URLs (checkboxes), toast message**: plain `useState` in
 
-  page reload is expected to clear results and re-fetch on demand.
+  `App.jsx`. Not persisted — a page reload is expected to clear results and
+
+  re-fetch on demand.
+
+- **Discard queue bookkeeping** (`jobsRef`, `discardedUrlsRef`,
+
+  `pendingDiscardQueueRef`, `batchInFlightRef`): plain `useRef`s in
+
+  `App.jsx`, not `useState` — see "The discard queue" below for why.
 
 - The two localStorage-backed hooks follow the same shape
 
@@ -209,75 +217,135 @@ drilling actually becomes painful, not preemptively.
 
   wraps `useState` + a `useEffect` that calls `saveToStorage`.
 
-### The discard-and-replace flow (important, non-obvious)
+### The discard queue (important, non-obvious)
 
-Discarding a job does **not** re-run the full search (that would blank the
+Discarding a job (or several via "Discard selection") does **not** re-run the
 
-whole table via the `loading` skeleton and re-fetch `max_jobs_saved` jobs).
+full search (that would blank the whole table via the `loading` skeleton and
 
-Instead it replaces just that one row in place with a single-job search.
+re-fetch `max_jobs_saved` jobs). Instead each discarded job's row is swapped
 
-`App.jsx`'s `handleDiscard(job)`:
+for a placeholder in place, and its replacement is fetched through a small
 
-1. Computes `updatedDiscardedUrls` synchronously (does **not** rely on
+queue that coalesces concurrent discards into as few `POST /jobs` calls as
 
-   reading `discardedUrls` state right after calling its setter, since React
+possible. There is **no global lock** — Discard/Search buttons are never
 
-   state updates aren't synchronous) and calls `setDiscardedUrls(...)` to
+disabled because a replacement search for some *other* job is running; the
 
-   persist it.
+queue exists specifically so that's safe.
 
-2. If the discarded job is the one currently open in `JobDetail`, closes the
+Placeholder/terminal shapes used inside `jobs` (keyed by `__key`, not
 
-   modal.
+`Job Url`, since there's no real job behind them yet):
 
-3. Finds the job's index in `jobs` and replaces that slot with a placeholder
+- `{ __searching: true, __key }` — queued or actively being fetched.
 
-   object `{ __searching: true, __key: <job url> }` via `setJobs` — the rest
+- `{ __noReplacement: true, __key }` — the batch that covered this slot came
 
-   of the array (and the rest of the UI) is untouched.
+  back without enough candidates (or failed outright). Rendered with a
 
-4. Calls `runReplacementSearch(url, updatedDiscardedUrls, excludedUrls)`,
+  "Dismiss" button instead of spinning forever — see `JobsTable.jsx`.
 
-   where `excludedUrls` is every other job's URL currently in `jobs` (computed
+**Shared entry point — `discardJobs(jobsToDiscard)`** (an array, so a single
 
-   from the pre-discard array, before the placeholder swap).
+discard is just `discardJobs([job])`, reused by `handleDiscard` and
 
-`runReplacementSearch` sets `isReplacing` (separate from `loading` — it does
+`handleDiscardSelection`):
 
-**not** trigger the full-page skeleton) and calls `POST /jobs` via
+1. Persists every URL to `discardedUrls` (permanent list) — computed off
 
-`buildRequestBody(config, [...updatedDiscardedUrls, ...excludedUrls], { max_jobs_saved: 1 })`.
+   `discardedUrlsRef.current`, not the `discardedUrls` state, then written to
 
-Two things matter here:
+   both the ref and `setDiscardedUrls`.
 
-- `max_jobs_saved` is overridden to `1` — only one replacement is fetched,
+2. Closes the `JobDetail` modal if it was open on one of the discarded jobs,
 
-  regardless of the configured value.
+   and drops those URLs from `selectedUrls` (the checkbox selection).
 
-- `discarded_urls` for this one request is the permanent list *plus* every
+3. Swaps every discarded job's slot for a `__searching` placeholder via
 
-  other job already on screen. That union is **not** persisted (only
+   `updateJobs` (see below) — multiple placeholders can coexist.
 
-  `updatedDiscardedUrls` is passed to `setDiscardedUrls`) — it just stops the
+4. Calls `enqueueDiscards(urls)`.
 
-  backend from handing back a job you're already looking at. There's also a
+**The queue itself** — `pendingDiscardQueueRef` (array of URLs) and
 
-  client-side safety-net filter against `excludedUrls` on the result.
+`batchInFlightRef` (boolean), both plain refs, not state, because the queue
 
-On resolution, `setJobs` finds the placeholder by `__key` and either replaces
+is driven by a recursive async chain (`processQueue` calling itself from its
 
-it with the fetched job, or — if nothing came back, or the request
+own `finally` block) that spans real network round-trips; using `useState`
 
-failed — removes that slot entirely (`splice`), with a toast explaining why.
+here would mean reading stale values from whichever render's closure
 
-While `isReplacing` is true, the "Search" button and every "Discard" button
+happened to kick off the chain.
 
-are disabled (`ConfigForm`'s `loading` prop and `JobsTable`'s/`JobDetail`'s
+- `enqueueDiscards(urls)` appends to `pendingDiscardQueueRef` and, only if
 
-`disableDiscard`/`discardDisabled` props), since `pollJobStatus` reuses a
+  `batchInFlightRef.current` is false, calls `processQueue()`.
 
-single shared `pollIntervalRef` and can't run two polls at once.
+- `processQueue()` grabs the *entire* current queue, clears it, sets
+
+  `batchInFlightRef.current = true`, and awaits
+
+  `runBatchReplacement(urls)`. In its `finally`, it flips the flag back off
+
+  and — if more URLs piled up in the queue while that batch was running —
+
+  calls itself again for the next round.
+
+- `runBatchReplacement(urls)` builds `buildRequestBody(config, [...discardedUrlsRef.current, ...excludedUrls], { max_jobs_saved: urls.length })`,
+
+  where `excludedUrls` is every *real* job currently in `jobs` (i.e.
+
+  `jobsRef.current` filtered to exclude both placeholder shapes) — so a batch
+
+  request always asks for exactly as many replacements as it's covering, and
+
+  excludes everything already visible (permanently discarded or just on
+
+  screen) from the candidates. On resolution, it walks `urls` in order and
+
+  fills each matching placeholder slot with the next unused candidate
+
+  (`replacements[i]`), or `makeNoReplacement(url)` if the batch came up
+
+  short; same on a thrown error, but for every slot.
+
+**Why `jobsRef` / `discardedUrlsRef` instead of reading state directly**:
+
+`runBatchReplacement`/`processQueue` run across `await`s, so by the time a
+
+recursive `processQueue()` call fires, the `jobs`/`discardedUrls` closed over
+
+by that function instance may be several renders stale. All `jobs` writes go
+
+through `updateJobs(updater)`, which computes the next value from
+
+`jobsRef.current` (not React's own `prevJobs`) and updates the ref
+
+*synchronously before* calling `setJobs` — don't call `setJobs` directly
+
+elsewhere in `App.jsx`, it'll desync the ref. `discardedUrlsRef` is kept in
+
+sync the same way at the one place it's written (`discardJobs`), plus a
+
+`useEffect` mirroring the `discardedUrls` state as a fallback.
+
+**Progress bar**: `pollJobStatus(jobId, intervalRef, onProgress)` takes an
+
+explicit interval ref so the full search (`searchPollIntervalRef`) and the
+
+discard queue (`batchPollIntervalRef`) never clobber each other's
+
+`setInterval`. Both paths pass `setProgress` as `onProgress` and null it out
+
+in their `finally` — so the same `<ProgressBar>` in `App.jsx` lights up for
+
+the full search, a lone replacement (`urls.length === 1`), and every batch
+
+call, with no separate progress state per call type.
 
 If you add another mutation that needs an immediate refetch with fresh data,
 
@@ -303,15 +371,19 @@ update state — don't chain off of state you just set.
 
   cards below that breakpoint (both are rendered in the DOM, toggled via
 
-  Tailwind's `hidden`/`sm:hidden`, not JS-based breakpoint detection). A job
+  Tailwind's `hidden`/`sm:hidden`, not JS-based breakpoint detection). Each
 
-  entry with `__searching: true` renders as a spinner row/card instead of
+  real job row has a checkbox (`selectedUrls`/`onToggleSelect` props feeding
 
-  real data — see the discard-and-replace flow below. Takes a
+  `App.jsx`'s multi-select state) alongside its "Discard" button — both are
 
-  `disableDiscard` prop to disable every "Discard" button while a
+  always enabled, never blocked by a replacement search running for another
 
-  replacement search is in flight.
+  job (see "The discard queue" above). `__searching`/`__noReplacement`
+
+  entries render as a spinner row or a "No replacement available." row with
+
+  a "Dismiss" button (`onDismissSlot`) instead of real data/actions.
 
 - `JobDetail.jsx` — modal, closes on backdrop click or the X button. Renders
 

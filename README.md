@@ -76,27 +76,43 @@ npm run preview   # serve the built dist/ locally to sanity-check
   state while the request is in flight and surfaces the API's `detail`
   field inline if the request fails.
 
-- **Discard flow** — clicking "Discard" (from the table row or the detail
-  modal):
-  1. Adds that job's `Job Url` to the `discarded_urls` array, persisted
-     separately in `localStorage` (key `job_scraper_discarded_urls`) via the
-     `useDiscardedUrls` hook, so it survives independently from the search
-     config.
-  2. If you were viewing that job's detail modal, it closes automatically.
-  3. The discarded job's row is replaced in place by a "Searching for a
-     replacement..." placeholder — the rest of the table is untouched, no
-     full-page reload or skeleton.
-  4. Runs `POST /jobs` with the same search config but `max_jobs_saved: 1`
-     (only one replacement is fetched) and `discarded_urls` temporarily
-     extended with every other job currently on screen, so the replacement
-     can't be a duplicate of something already shown. That extension is only
-     used for this one request — it isn't persisted.
-  5. Once the replacement arrives it's swapped into the placeholder's slot.
-     If none is found (or the request fails), the placeholder row is simply
-     removed and a toast explains why.
-  6. While a replacement search is in flight, the "Search" button and every
-     "Discard" button are disabled to keep only one search running at a
-     time.
+- **Discard flow, with batched replacements** — clicking "Discard" (table
+  row or detail modal), or checking rows and clicking "Discard selection":
+  1. Every discarded job's `Job Url` is added to the `discarded_urls` array,
+     persisted separately in `localStorage` (key
+     `job_scraper_discarded_urls`) via the `useDiscardedUrls` hook.
+  2. Each discarded job's row is replaced in place, immediately, by a
+     "Searching for a replacement..." placeholder — the rest of the table is
+     untouched, no full-page reload or skeleton. Multiple placeholders can
+     be on screen at once.
+  3. Discard/Search buttons are **never** disabled by a replacement search
+     for other jobs — you can keep discarding while one is in flight.
+  4. Replacement requests are coalesced through a small queue instead of
+     firing one `POST /jobs` per discard: if no replacement call is
+     currently running, the just-discarded job(s) fire one immediately
+     (`max_jobs_saved: N`, N = however many were just discarded together).
+     If a call **is** already running, they're added to a pending queue
+     instead. The moment the running call finishes, everything accumulated
+     in the queue since it started fires as a single new batch call — so
+     several individual discards made in quick succession end up resolved
+     by one request, not one each.
+  5. `discarded_urls` sent with any of these requests (single or batch) is
+     always the permanent list plus every job currently visible elsewhere in
+     the table, temporarily added just for that one request (not persisted),
+     so replacements can't duplicate something already shown.
+  6. When a batch's response comes back, the returned jobs are distributed
+     into the matching placeholder slots in the same order those jobs were
+     discarded/queued. If a batch returns fewer jobs than requested (or the
+     request fails), the leftover slot(s) show a "No replacement available."
+     row with a "Dismiss" button instead of spinning forever.
+  7. The existing progress bar (used for the full search) is reused for
+     every one of these calls — single-job replacements and every batch
+     call — and reflects whichever call is currently active.
+
+- **Multi-select** — each row/card has a checkbox; "Discard selection" in
+  the results header shows the current count (e.g. "Discard selection (3)"),
+  is disabled with nothing selected, and feeds the same discard queue
+  described above.
 
 - **Excel export** (`utils/excelExport.js`) — the "Download Excel" button
   generates an `.xlsx` file client-side with columns `Job Title`,

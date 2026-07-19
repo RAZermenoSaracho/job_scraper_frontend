@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import ConfigForm from "./components/ConfigForm.jsx";
 import JobsTable from "./components/JobsTable.jsx";
 import JobDetail from "./components/JobDetail.jsx";
@@ -6,194 +6,82 @@ import ProgressBar from "./components/ProgressBar.jsx";
 import Toast from "./components/Toast.jsx";
 import { useJobConfig } from "./hooks/useJobConfig.js";
 import { useDiscardedUrls } from "./hooks/useDiscardedUrls.js";
-import { startScrapeJob, getJobStatus, getJobResult } from "./utils/api.js";
+import { useJobsState } from "./hooks/useJobsState.js";
+import { useJobSearch } from "./hooks/useJobSearch.js";
+import { useDiscardQueue } from "./hooks/useDiscardQueue.js";
+import { isRealJob } from "./utils/jobSlots.js";
 import { exportJobsToExcel } from "./utils/excelExport.js";
-
-const POLL_INTERVAL_MS = 2000;
-
-function buildRequestBody(config, discardedUrls, overrides = {}) {
-  return {
-    keywords: config.keywords,
-    acceptable_locations: config.acceptable_locations,
-    anti_keywords: config.anti_keywords,
-    discarded_urls: discardedUrls,
-    max_jobs_searched_per_keyword: config.max_jobs_searched_per_keyword,
-    max_jobs_saved: config.max_jobs_saved,
-    max_experience_years: config.max_experience_years,
-    ...overrides,
-  };
-}
-
-// Placeholder row shown in `jobs` at the discarded job's position while its
-// replacement is being searched for. `__key` stands in for `Job Url` as the
-// React key since there's no real job yet.
-function makePlaceholder(key) {
-  return { __searching: true, __key: key };
-}
 
 export default function App() {
   const [config, setConfig] = useJobConfig();
   const [discardedUrls, setDiscardedUrls] = useDiscardedUrls();
 
-  const [jobs, setJobs] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [isReplacing, setIsReplacing] = useState(false);
+  const { jobs, updateJobs, jobsRef } = useJobsState();
+  // Shared by the full search and the discard queue so the same
+  // <ProgressBar> below lights up for either — see useDiscardQueue's doc
+  // comment for why this isn't owned inside useJobSearch instead.
   const [progress, setProgress] = useState(null);
-  const [error, setError] = useState("");
+
   const [selectedJob, setSelectedJob] = useState(null);
+  const [selectedUrls, setSelectedUrls] = useState([]);
   const [toastMessage, setToastMessage] = useState("");
-
-  const pollIntervalRef = useRef(null);
-
-  // Stop polling on unmount so an in-flight job doesn't keep ticking after
-  // the component is gone.
-  useEffect(() => {
-    return () => {
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-    };
-  }, []);
 
   function showToast(message) {
     setToastMessage(message);
     setTimeout(() => setToastMessage(""), 3000);
   }
 
-  // Polls GET /jobs/{jobId}/status every 2s, reporting progress via
-  // `onProgress` on each tick, until the job reaches a terminal state.
-  // Resolves with the job array on "done"; rejects (tagged isJobError) on
-  // "error". `onProgress` defaults to updating the page-level progress bar;
-  // pass a no-op for background searches that shouldn't drive it (e.g. the
-  // single-job replacement search after a discard).
-  function pollJobStatus(jobId, { onProgress = setProgress } = {}) {
-    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+  const { loading, error, handleSearch } = useJobSearch(config, discardedUrls, {
+    updateJobs,
+    showToast,
+    setProgress,
+    onSearchStart: () => setSelectedUrls([]),
+  });
 
-    return new Promise((resolve, reject) => {
-      pollIntervalRef.current = setInterval(async () => {
-        try {
-          const status = await getJobStatus(jobId);
-
-          if (status.status === "done") {
-            clearInterval(pollIntervalRef.current);
-            pollIntervalRef.current = null;
-            const result = await getJobResult(jobId);
-            resolve(result);
-            return;
-          }
-
-          if (status.status === "error") {
-            clearInterval(pollIntervalRef.current);
-            pollIntervalRef.current = null;
-            const jobError = new Error(status.error || "The search failed.");
-            jobError.isJobError = true;
-            reject(jobError);
-            return;
-          }
-
-          onProgress({ stage: status.stage, current: status.current, total: status.total });
-        } catch (err) {
-          clearInterval(pollIntervalRef.current);
-          pollIntervalRef.current = null;
-          reject(err);
-        }
-      }, POLL_INTERVAL_MS);
-    });
-  }
-
-  async function runSearch(discardedUrlsForRequest) {
-    setLoading(true);
-    setError("");
-    setProgress(null);
-    try {
-      const body = buildRequestBody(config, discardedUrlsForRequest);
-      const { job_id } = await startScrapeJob(body);
-      const result = await pollJobStatus(job_id);
-      setJobs(Array.isArray(result?.jobs) ? result.jobs : []);
-    } catch (err) {
-      if (err.isJobError) {
-        showToast(err.message);
-      } else {
-        setError(err.message);
-      }
-    } finally {
-      setLoading(false);
-      setProgress(null);
-    }
-  }
-
-  function handleSearch() {
-    runSearch(discardedUrls);
-  }
-
-  // Fetches exactly one replacement job with the same search criteria and
-  // swaps it into the placeholder's slot. `excludedUrls` are the URLs of
-  // every other job currently on screen (not persisted to discardedUrls —
-  // just kept out of this one request) so the replacement can't duplicate
-  // something already shown.
-  async function runReplacementSearch(placeholderKey, updatedDiscardedUrls, excludedUrls) {
-    setIsReplacing(true);
-    try {
-      const body = buildRequestBody(config, [...updatedDiscardedUrls, ...excludedUrls], {
-        max_jobs_saved: 1,
-      });
-      const { job_id } = await startScrapeJob(body);
-      const result = await pollJobStatus(job_id, { onProgress: () => {} });
-      const candidates = Array.isArray(result?.jobs) ? result.jobs : [];
-      const replacement = candidates.find((candidate) => !excludedUrls.includes(candidate["Job Url"]));
-
-      setJobs((prevJobs) => {
-        const index = prevJobs.findIndex((j) => j.__searching && j.__key === placeholderKey);
-        if (index === -1) return prevJobs;
-        const nextJobs = [...prevJobs];
-        if (replacement) {
-          nextJobs[index] = replacement;
-        } else {
-          nextJobs.splice(index, 1);
-        }
-        return nextJobs;
-      });
-
-      if (!replacement) {
-        showToast("No replacement job found.");
-      }
-    } catch (err) {
-      setJobs((prevJobs) => prevJobs.filter((j) => !(j.__searching && j.__key === placeholderKey)));
-      showToast(err.message || "Failed to search for a replacement.");
-    } finally {
-      setIsReplacing(false);
-    }
-  }
-
-  async function handleDiscard(job) {
-    const url = job["Job Url"];
-    const updatedDiscardedUrls = discardedUrls.includes(url)
-      ? discardedUrls
-      : [...discardedUrls, url];
-    setDiscardedUrls(updatedDiscardedUrls);
-
-    if (selectedJob && selectedJob["Job Url"] === url) {
+  // Called by discardJobs right before it swaps the discarded jobs' slots
+  // for placeholders: closes the detail modal if it was open on one of
+  // them, and drops them from the checkbox selection.
+  function clearSelectionFor(urls) {
+    if (selectedJob && urls.includes(selectedJob["Job Url"])) {
       setSelectedJob(null);
     }
+    setSelectedUrls((prev) => prev.filter((url) => !urls.includes(url)));
+  }
 
-    const index = jobs.findIndex((j) => j["Job Url"] === url);
-    const excludedUrls = jobs
-      .filter((j, i) => i !== index && !j.__searching)
-      .map((j) => j["Job Url"]);
+  const { discardJobs } = useDiscardQueue({
+    config,
+    discardedUrls,
+    setDiscardedUrls,
+    jobsRef,
+    updateJobs,
+    showToast,
+    setProgress,
+    onDiscard: clearSelectionFor,
+  });
 
-    if (index !== -1) {
-      const nextJobs = [...jobs];
-      nextJobs[index] = makePlaceholder(url);
-      setJobs(nextJobs);
-    }
+  function handleDiscard(job) {
+    discardJobs([job]);
+  }
 
-    showToast("Job discarded — searching for a replacement...");
-    await runReplacementSearch(url, updatedDiscardedUrls, excludedUrls);
+  function toggleSelected(url) {
+    setSelectedUrls((prev) => (prev.includes(url) ? prev.filter((u) => u !== url) : [...prev, url]));
+  }
+
+  function handleDiscardSelection() {
+    const jobsToDiscard = jobs.filter((job) => isRealJob(job) && selectedUrls.includes(job["Job Url"]));
+    discardJobs(jobsToDiscard);
+  }
+
+  function handleDismissSlot(key) {
+    updateJobs((prevJobs) => prevJobs.filter((job) => !(job.__noReplacement && job.__key === key)));
   }
 
   function handleExport() {
-    exportJobsToExcel(jobs.filter((job) => !job.__searching));
+    exportJobsToExcel(jobs.filter(isRealJob));
   }
 
-  const realJobsCount = jobs.filter((job) => !job.__searching).length;
+  const realJobsCount = jobs.filter(isRealJob).length;
+  const selectedCount = selectedUrls.length;
 
   return (
     <div className="min-h-screen bg-neutral-950">
@@ -207,12 +95,7 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-5xl space-y-4 px-4 py-6">
-        <ConfigForm
-          config={config}
-          onChange={setConfig}
-          onSearch={handleSearch}
-          loading={loading || isReplacing}
-        />
+        <ConfigForm config={config} onChange={setConfig} onSearch={handleSearch} loading={loading} />
 
         {progress && <ProgressBar {...progress} />}
 
@@ -222,18 +105,28 @@ export default function App() {
           </div>
         )}
 
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-base font-semibold text-neutral-100">
             Results {realJobsCount > 0 && `(${realJobsCount})`}
           </h2>
-          <button
-            type="button"
-            onClick={handleExport}
-            disabled={realJobsCount === 0}
-            className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm font-medium text-neutral-200 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Download Excel
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handleDiscardSelection}
+              disabled={selectedCount === 0}
+              className="rounded-md border border-red-800 bg-neutral-900 px-3 py-1.5 text-sm font-medium text-red-400 hover:bg-red-950/50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Discard selection {selectedCount > 0 && `(${selectedCount})`}
+            </button>
+            <button
+              type="button"
+              onClick={handleExport}
+              disabled={realJobsCount === 0}
+              className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm font-medium text-neutral-200 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Download Excel
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -247,17 +140,14 @@ export default function App() {
             jobs={jobs}
             onSelectJob={setSelectedJob}
             onDiscardJob={handleDiscard}
-            disableDiscard={isReplacing}
+            selectedUrls={selectedUrls}
+            onToggleSelect={toggleSelected}
+            onDismissSlot={handleDismissSlot}
           />
         )}
       </main>
 
-      <JobDetail
-        job={selectedJob}
-        onClose={() => setSelectedJob(null)}
-        onDiscard={handleDiscard}
-        discardDisabled={isReplacing}
-      />
+      <JobDetail job={selectedJob} onClose={() => setSelectedJob(null)} onDiscard={handleDiscard} />
       <Toast message={toastMessage} />
     </div>
   );
